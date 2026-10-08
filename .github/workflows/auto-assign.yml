@@ -1,0 +1,32 @@
+name: auto-assign
+
+# Reusable: assigns a PR to whoever opened it, so the assignee column says who
+# is driving it. Reviewers are requested separately, by GitHub itself, from each
+# repo's .github/CODEOWNERS.
+#
+# The caller's `pull_request` event is visible here as github.event, and the
+# token carries only the permissions the caller's job grants (pull-requests: write).
+
+on:
+  workflow_call:
+
+jobs:
+  assign-author:
+    # Skipped when:
+    # - a bot opened it (dependabot, ...): bots cannot be assignees;
+    # - someone was already assigned when it was opened;
+    # - it comes from a fork: the token is read-only there, and an outside
+    #   contributor cannot be assigned anyway.
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      toJSON(github.event.pull_request.assignees) == '[]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: gh api --method POST "repos/$REPO/issues/$PR/assignees" -f "assignees[]=$AUTHOR"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
