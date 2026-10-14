@@ -1,0 +1,133 @@
+name: code-review
+
+# Reusable: advisory Claude review of a PR. Not a required check; it never gates a
+# merge. Each repo calls it from a small .github/workflows/code-review.yml stub that
+# holds what is specific to that repo: when to review, which paths to ignore, and
+# what to look for. Everything else -- the round cap, the skips, the model, the
+# tools, and the access to Claude -- lives here.
+#
+# Access to Claude is Workload Identity Federation, not a stored key: the claude job
+# trades GitHub's OIDC token for a Claude token that lasts minutes. Anthropic's rule
+# gha-code-review accepts only tokens from THIS file on main, in a dozer-ai repo, on
+# pull_request or workflow_dispatch. So editing this file needs a reviewed PR, and
+# no other workflow can get a token.
+#
+# The calling job must grant contents: read, pull-requests: write and id-token: write.
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "The PR to review"
+        required: true
+        type: string
+      prompt:
+        description: "The repository-specific part of the review prompt"
+        required: true
+        type: string
+
+# Rounds 1-3 surface the real findings; later rounds are mostly polish and
+# rehashes. Each round posts one claude[bot] summary comment, and those are what
+# is counted. workflow_dispatch bypasses the cap.
+env:
+  MAX_AUTOMATIC_ROUNDS: "3"
+
+jobs:
+  budget:
+    # Drafts are for watching CI, not for review; `ready_for_review` picks the PR
+    # up when it is marked ready. Bot PRs are mechanical and get no review. PRs
+    # from forks are never reviewed, so they never reach the token exchange.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.draft == false &&
+       github.event.pull_request.user.type != 'Bot' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.budget.outputs.should_run }}
+    steps:
+      - id: budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+
+          # One line per comment, so the count is right across pages.
+          comments() {
+              gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+                  --jq ".[] | select($1) | .id" | wc -l
+          }
+          prior=$(comments '.user.login == "claude[bot]"')
+          echo "prior review rounds: $prior (cap $MAX_AUTOMATIC_ROUNDS)"
+          if [ "$prior" -lt "$MAX_AUTOMATIC_ROUNDS" ]; then
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+
+          # Say so once; the sentinel keeps later pushes from repeating it.
+          sentinel="<!-- claude-review-cap-reached -->"
+          if [ "$(comments ".body | contains(\"$sentinel\")")" -eq 0 ]; then
+              url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/code-review.yml"
+              gh pr comment "$PR" -R "$GITHUB_REPOSITORY" -b "$sentinel
+          Claude has reviewed this PR $MAX_AUTOMATIC_ROUNDS times and will not run again on later pushes. To force another round, run [code-review]($url) from the Actions tab with PR number $PR."
+          fi
+
+  claude:
+    needs: budget
+    if: needs.budget.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # A workflow_dispatch run starts on the default branch; review the PR's head.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', inputs.pr_number) || '' }}
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          # Workload Identity Federation (see the top of this file). These are
+          # identifiers, not credentials. Never add anthropic_api_key or
+          # claude_code_oauth_token here: a static credential silently wins.
+          anthropic_organization_id: 130e69c6-3e51-44b2-8225-5ce2c22878df
+          anthropic_federation_rule_id: fdrl_01Gu2ehTDNKzuHEcJT9j1x9S
+          anthropic_service_account_id: svac_014kRVSvjY3oRV63CfQKHDpx
+          anthropic_workspace_id: wrkspc_01EqtESfiAuzyTS8JY3W38n9
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ inputs.pr_number }}
+
+            ${{ inputs.prompt }}
+
+            Before drafting anything, read this PR's earlier review rounds:
+            `gh pr view ${{ inputs.pr_number }} --comments` for the summaries, and
+            `gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments` for the inline threads.
+
+            - Do not re-raise a concern the author has answered. A reply pointing at
+              a test, a file or an explanation closes it, even if a fresh read of
+              the code would raise it again.
+            - If there are already two or more claude[bot] summary comments, report
+              only new correctness defects in the latest push. No polish.
+            - Keep a finding only if it is a real defect, it is introduced or still
+              unresolved by the latest push, and no earlier thread covers it.
+              Posting zero findings is a good outcome.
+
+            Report only defects you can point at in the diff, with the failure they
+            cause. If a file is clean, say nothing about it. Use inline comments for
+            specific lines. Then ALWAYS post exactly one summary comment with
+            `gh pr comment ${{ inputs.pr_number }} -R ${{ github.repository }} -b "..."`, holding anything
+            structural; with nothing to report it says "No new findings on this
+            round." Nobody sees your final message, only the PR comments.
+          claude_args: |
+            --model sonnet
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments:*)"
