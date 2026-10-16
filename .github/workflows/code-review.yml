@@ -109,25 +109,37 @@ jobs:
 
             ${{ inputs.prompt }}
 
-            Before drafting anything, read this PR's earlier review rounds:
-            `gh pr view ${{ inputs.pr_number }} --comments` for the summaries, and
-            `gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments` for the inline threads.
+            Review it properly before deciding anything. In order:
 
-            - Do not re-raise a concern the author has answered. A reply pointing at
-              a test, a file or an explanation closes it, even if a fresh read of
-              the code would raise it again.
-            - If there are already two or more claude[bot] summary comments, report
-              only new correctness defects in the latest push. No polish.
-            - Keep a finding only if it is a real defect, it is introduced or still
-              unresolved by the latest push, and no earlier thread covers it.
-              Posting zero findings is a good outcome.
+            1. Read the whole diff: `gh pr diff ${{ inputs.pr_number }}`.
+            2. The repository is checked out at this PR's code. Open every changed
+               file in full, and the code that calls or is called by what changed,
+               with Read and Grep. Judge each change by how the surrounding code
+               uses it, not by the diff alone.
+            3. Go through each focus area above. For each change, ask what it could
+               break: its callers, other modes and configurations, edge cases
+               (empty, zero, missing, first run), and what the tests assume. A test
+               that passes can still encode the wrong behaviour.
+               Ask too what existing data or state was written by an older version
+               or a different mode, and whether the change still handles it.
+            4. Read this PR's earlier review rounds:
+               `gh pr view ${{ inputs.pr_number }} --comments` for the summaries, and
+               `gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments` for the inline threads.
+               - Do not re-raise a concern the author has answered. A reply pointing
+                 at a test, a file or an explanation closes it.
+               - From the third round on (two or more earlier claude[bot] summary
+                 comments), report only new correctness defects in the latest
+                 push. No polish.
 
-            Report only defects you can point at in the diff, with the failure they
-            cause. If a file is clean, say nothing about it. Use inline comments for
-            specific lines. Then ALWAYS post exactly one summary comment with
-            `gh pr comment ${{ inputs.pr_number }} -R ${{ github.repository }} -b "..."`, holding anything
-            structural; with nothing to report it says "No new findings on this
-            round." Nobody sees your final message, only the PR comments.
+            Raise what the instructions above ask for. Where they don't say, raise
+            defects and real risks, each with the line and what would go wrong, not
+            style. Use inline comments for specific lines.
+
+            Then ALWAYS post exactly one summary comment with
+            `gh pr comment ${{ inputs.pr_number }} -R ${{ github.repository }} -b "..."`. It starts with
+            what you reviewed: the files you read and the focus areas you checked.
+            Then the findings, or "No findings on this round." Never post that line
+            alone. Nobody sees your final message, only the PR comments.
           claude_args: |
             --model sonnet
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments:*)"
+            --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments:*)"
