@@ -113,15 +113,21 @@ jobs:
 
             1. Read the whole diff: `gh pr diff ${{ inputs.pr_number }}`.
             2. The repository is checked out at this PR's code. Open every changed
-               file in full, and the code that calls or is called by what changed,
-               with Read and Grep. Judge each change by how the surrounding code
-               uses it, not by the diff alone.
+               file in full. Then cross each boundary the change touches: use Grep to
+               find every other caller of each changed function, and every sibling
+               of the changed code that does the same job another way (the other
+               mode, processor, handler, target or version), and open those too,
+               including the ones the diff does not touch. Judge each change by how
+               that surrounding code uses it, not by the diff alone.
             3. Go through each focus area above. For each change, ask what it could
                break: its callers, other modes and configurations, edge cases
                (empty, zero, missing, first run), and what the tests assume. A test
                that passes can still encode the wrong behaviour.
                Ask too what existing data or state was written by an older version
                or a different mode, and whether the change still handles it.
+               Check whether a test exercises the change where it is wired in (the
+               call site that makes it take effect), not only the helper it adds;
+               if none does, that is a finding.
             4. Read this PR's earlier review rounds:
                `gh pr view ${{ inputs.pr_number }} --comments` for the summaries, and
                `gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}/comments` for the inline threads.
@@ -137,7 +143,8 @@ jobs:
 
             Then ALWAYS post exactly one summary comment with
             `gh pr comment ${{ inputs.pr_number }} -R ${{ github.repository }} -b "..."`. It starts with
-            what you reviewed: the files you read and the focus areas you checked.
+            what you reviewed: the files you read, naming the callers and sibling
+            code from step 2 separately, and the focus areas you checked.
             Then the findings, or "No findings on this round." Never post that line
             alone. Nobody sees your final message, only the PR comments.
           claude_args: |
